@@ -165,9 +165,6 @@ public class VerticaClient
             case Types.BIGINT:
                 return Optional.of(bigintColumnMapping());
 
-            case Types.FLOAT:
-                return Optional.of(floatColumnMapping());
-
             case Types.DOUBLE:
                 return Optional.of(doubleColumnMapping());
 
