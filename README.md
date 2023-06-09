@@ -19,7 +19,7 @@ Import the project into IntelliJ IDEA.  Open the root pom.xml and add "plugin/tr
 
 Reload Maven and wait for everything to settle.
 
-Open the Maven panel and expand trino-vertica lifecycle.  Run Clean, then Install.
+Open the Maven panel and expand trino-vertica lifecycle.  Turn off tests, then run Clean, then Install.
 
 Now go to the source tree into plugins/trino-vertica/target.  Copy the ZIP file to the plugins directory in your Trino 419 install.
 
