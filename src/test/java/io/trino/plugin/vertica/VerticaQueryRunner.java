@@ -26,16 +26,16 @@ import java.util.Map;
 
 import static io.trino.testing.TestingSession.testSessionBuilder;
 
-public class ExampleQueryRunner
+public class VerticaQueryRunner
 {
-    private ExampleQueryRunner() {}
+    private VerticaQueryRunner() {}
 
     public static QueryRunner createQueryRunner()
             throws Exception
     {
         Session defaultSession = testSessionBuilder()
-                .setCatalog("example")
-                .setSchema("default")
+                .setCatalog("vertica")
+                .setSchema("trino")
                 .build();
 
         Map<String, String> extraProperties = ImmutableMap.<String, String>builder()
@@ -48,12 +48,12 @@ public class ExampleQueryRunner
         queryRunner.installPlugin(new VerticaPlugin());
 
         Map<String, String> connectorProperties = Map.of(
-                "connection-url", "jdbc:h2:mem:test;init=CREATE TABLE IF NOT EXISTS TEST AS SELECT * FROM (VALUES (1, 'one'), (2, 'two')) AS t(id, name)",
-                "connection-user", "test",
-                "connection-password", "");
+                "connection-url", "jdbc:vertica://192.168.1.206:5433/d2",
+                "connection-user", "trino",
+                "connection-password", "trino123");
         queryRunner.createCatalog(
-                "example",
-                "example_jdbc",
+                "vertica",
+                "vertica",
                 connectorProperties);
 
         return queryRunner;
@@ -63,12 +63,12 @@ public class ExampleQueryRunner
             throws Exception
     {
         Logging logger = Logging.initialize();
-        logger.setLevel("io.trino.plugin.example_jdbc", Level.DEBUG);
+        logger.setLevel("io.trino.plugin.vertica", Level.DEBUG);
         logger.setLevel("io.trino", Level.INFO);
 
         QueryRunner queryRunner = createQueryRunner();
 
-        Logger log = Logger.get(ExampleQueryRunner.class);
+        Logger log = Logger.get(VerticaQueryRunner.class);
         log.info("======== SERVER STARTED ========");
         log.info("\n====\n%s\n====", ((DistributedQueryRunner) queryRunner).getCoordinator().getBaseUrl());
     }

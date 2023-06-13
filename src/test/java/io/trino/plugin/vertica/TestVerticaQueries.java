@@ -18,27 +18,27 @@ import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
 import org.testng.annotations.Test;
 
-public class TestExampleQueries
+public class TestVerticaQueries
         extends AbstractTestQueryFramework
 {
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return ExampleQueryRunner.createQueryRunner();
+        return VerticaQueryRunner.createQueryRunner();
     }
 
     @Test
     public void showTables()
     {
-        assertQuery("SHOW SCHEMAS FROM example", "VALUES 'information_schema', 'public'");
-        assertQuery("SHOW TABLES FROM example.public", "VALUES 'test'");
+        assertQuery("SHOW SCHEMAS FROM vertica LIKE 't%'", "VALUES 'trino'");
+        assertQuery("SHOW TABLES FROM vertica.trino", "VALUES 'test'");
     }
 
     @Test
     public void selectFromTable()
     {
-        assertQuery("SELECT name FROM example.public.test",
-                "VALUES 'one', 'two'");
+        assertQuery("SELECT DISTINCT v FROM vertica.trino.test",
+                "VALUES 'Vertica', 'Trino'");
     }
 }
