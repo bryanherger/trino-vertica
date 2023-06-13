@@ -5,7 +5,7 @@ This is an experiment based on trino-example-jdbc.  Currently it supports:
 
 Data types: BOOLEAN, INT, DOUBLE, CHAR, VARCHAR, BINARY, VARBINARY, DATE, TIME, TIMESTAMP
 
-Nothing else works, but I will work on predicates, aggregates, remaining primitives and complex data types over time.
+I've added some aggregate and expression support copied from the Postgres connector, but this is very much a work in progress with many missing features.  File an issue if you need me to prioritize something.
 
 ### How to install
 
@@ -19,7 +19,7 @@ Import the project into IntelliJ IDEA.  Open the root pom.xml and add "plugin/tr
 
 Reload Maven and wait for everything to settle.
 
-Open the Maven panel and expand trino-vertica lifecycle.  Turn off tests, then run Clean, then Install.
+Open the Maven panel and expand trino-vertica lifecycle.  Tests are implemented using TestContainers and can take a long time to run, so you might ant to skip tests.  Run Clean, then Install.
 
 Now go to the source tree into plugins/trino-vertica/target.  Copy the ZIP file to the plugins directory in your Trino 419 install.
 
