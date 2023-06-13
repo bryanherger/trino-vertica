@@ -178,7 +178,7 @@ public class VerticaClient
     {
         super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, remoteQueryModifier, true);
         ImmutableList.Builder<String> tableTypes = ImmutableList.builder();
-        tableTypes.add("TABLE", "VIEW");
+        tableTypes.add("TABLE", "VIEW", "SYSTEM TABLE");
         this.tableTypes = tableTypes.build();
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()

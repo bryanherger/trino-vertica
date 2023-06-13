@@ -36,9 +36,17 @@ public class TestVerticaQueries
     }
 
     @Test
+    public void createAndDropTable()
+    {
+        assertQuerySucceeds("create table vertica.trino.test2 (a int, b date, c varchar)");
+        assertQuery("SHOW TABLES FROM vertica.trino", "VALUES 'test','test2'");
+        assertQuerySucceeds("drop table vertica.trino.test2");
+        assertQuery("SHOW TABLES FROM vertica.trino", "VALUES 'test'");
+    }
+
+    @Test
     public void selectFromTable()
     {
-        assertQuery("SELECT DISTINCT v FROM vertica.trino.test",
-                "VALUES 'Vertica', 'Trino'");
+        assertQuery("SELECT DISTINCT v FROM vertica.trino.test", "VALUES 'Vertica', 'Trino'");
     }
 }

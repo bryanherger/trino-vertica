@@ -33,6 +33,8 @@ public class VerticaQueryRunner
     public static QueryRunner createQueryRunner()
             throws Exception
     {
+        TestingVerticaServer testingVerticaServer = new TestingVerticaServer();
+
         Session defaultSession = testSessionBuilder()
                 .setCatalog("vertica")
                 .setSchema("trino")
@@ -48,9 +50,9 @@ public class VerticaQueryRunner
         queryRunner.installPlugin(new VerticaPlugin());
 
         Map<String, String> connectorProperties = Map.of(
-                "connection-url", "jdbc:vertica://192.168.1.206:5433/d2",
-                "connection-user", "trino",
-                "connection-password", "trino123");
+                "connection-url", testingVerticaServer.getJdbcUrl(),
+                "connection-user", testingVerticaServer.getUser(),
+                "connection-password", testingVerticaServer.getPassword());
         queryRunner.createCatalog(
                 "vertica",
                 "vertica",
