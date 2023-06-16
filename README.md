@@ -3,7 +3,7 @@ Trino JDBC connector to Vertica
 
 This is an experiment based on trino-example-jdbc.  Currently it supports:
 
-Data types: BOOLEAN, INT, DOUBLE, CHAR, VARCHAR, BINARY, VARBINARY, DATE, TIME, TIMESTAMP
+Data types: BOOLEAN, INT, DOUBLE, CHAR, VARCHAR, BINARY, VARBINARY, DATE, TIME, TIMESTAMP, UUID
 
 I've added some aggregate and expression support copied from the Postgres connector, but this is very much a work in progress with many missing features.  File an issue if you need me to prioritize something.
 
