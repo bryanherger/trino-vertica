@@ -45,6 +45,16 @@ public class TestVerticaQueries
     }
 
     @Test
+    public void typeTesting()
+    {
+        assertQuerySucceeds("create table vertica.trino.sometypes (d1 decimal(18,8), d2 decimal(12))");
+        assertQuerySucceeds("INSERT INTO vertica.trino.sometypes VALUES (1.234,246)");
+        assertQuery("SELECT d1 FROM vertica.trino.sometypes", "VALUES 1.234");
+        assertQuery("SELECT d2 FROM vertica.trino.sometypes", "VALUES 246");
+        assertQuerySucceeds("drop table vertica.trino.sometypes");
+    }
+
+    @Test
     public void selectFromTable()
     {
         assertQuery("SELECT DISTINCT v FROM vertica.trino.test", "VALUES 'Vertica', 'Trino'");

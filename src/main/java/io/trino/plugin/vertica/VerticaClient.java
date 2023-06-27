@@ -18,25 +18,31 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.math.LongMath;
 import com.google.inject.Inject;
 import io.airlift.log.Logger;
+import io.airlift.slice.Slice;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
+import io.trino.plugin.jdbc.BooleanReadFunction;
 import io.trino.plugin.jdbc.ColumnMapping;
 import io.trino.plugin.jdbc.ConnectionFactory;
+import io.trino.plugin.jdbc.DoubleReadFunction;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcSortItem;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.LongReadFunction;
 import io.trino.plugin.jdbc.LongWriteFunction;
+import io.trino.plugin.jdbc.ObjectReadFunction;
 import io.trino.plugin.jdbc.ObjectWriteFunction;
 import io.trino.plugin.jdbc.QueryBuilder;
+import io.trino.plugin.jdbc.ReadFunction;
 import io.trino.plugin.jdbc.RemoteTableName;
+import io.trino.plugin.jdbc.SliceReadFunction;
 import io.trino.plugin.jdbc.SliceWriteFunction;
 import io.trino.plugin.jdbc.WriteMapping;
-import io.trino.plugin.jdbc.aggregation.ImplementAvgDecimal;
 import io.trino.plugin.jdbc.aggregation.ImplementAvgFloatingPoint;
 import io.trino.plugin.jdbc.aggregation.ImplementCorr;
 import io.trino.plugin.jdbc.aggregation.ImplementCount;
@@ -59,13 +65,15 @@ import io.trino.plugin.jdbc.expression.RewriteIn;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
+import io.trino.spi.block.Block;
+import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
-import io.trino.spi.type.Decimals;
 import io.trino.spi.type.LongTimestamp;
 import io.trino.spi.type.LongTimestampWithTimeZone;
 import io.trino.spi.type.StandardTypes;
@@ -77,8 +85,10 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
 
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
@@ -93,11 +103,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiFunction;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
-import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
-import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
-import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
-import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
@@ -157,7 +164,6 @@ import static io.trino.spi.type.VarcharType.createVarcharType;
 import static java.lang.Math.floorDiv;
 import static java.lang.Math.floorMod;
 import static java.lang.Math.max;
-import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.math.RoundingMode.UNNECESSARY;
 import static java.util.stream.Collectors.joining;
@@ -222,8 +228,6 @@ public class VerticaClient
                         .add(new ImplementCountDistinct(bigintTypeHandle, false))
                         .add(new ImplementSum(VerticaClient::toTypeHandle))
                         .add(new ImplementAvgFloatingPoint())
-                        .add(new ImplementAvgDecimal())
-                        //.add(new ImplementAvgBigint())
                         .add(new ImplementStddevSamp())
                         .add(new ImplementStddevPop())
                         .add(new ImplementVarianceSamp())
@@ -241,7 +245,7 @@ public class VerticaClient
     {
         String jdbcTypeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
-
+        log.info("typeHandle(1):" + typeHandle.toString());
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;
@@ -268,25 +272,15 @@ public class VerticaClient
             case Types.DOUBLE:
                 return Optional.of(doubleColumnMapping());
 
-            case Types.NUMERIC: {
+            case Types.NUMERIC:
+            case Types.DECIMAL:
+            {
+                // example: typeHandle(1):JdbcTypeHandle{jdbcType=2, jdbcTypeName=Numeric, columnSize=18, decimalDigits=8}
                 int columnSize = typeHandle.getRequiredColumnSize();
                 int precision;
                 int decimalDigits = typeHandle.getDecimalDigits().orElse(0);
-                if (getDecimalRounding(session) == ALLOW_OVERFLOW) {
-                    if (columnSize == PRECISION_OF_UNSPECIFIED_DECIMAL) {
-                        // decimal type with unspecified scale - up to 131072 digits before the decimal point; up to 16383 digits after the decimal point)
-                        return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, getDecimalDefaultScale(session)), getDecimalRoundingMode(session)));
-                    }
-                    precision = columnSize;
-                    if (precision > Decimals.MAX_PRECISION) {
-                        int scale = min(decimalDigits, getDecimalDefaultScale(session));
-                        return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
-                    }
-                }
                 precision = columnSize + max(-decimalDigits, 0); // Map decimal(p, -s) (negative scale) to decimal(p+s, 0).
-                if (columnSize == PRECISION_OF_UNSPECIFIED_DECIMAL || precision > Decimals.MAX_PRECISION) {
-                    break;
-                }
+                log.info("decimal type (" + precision + "," + max(decimalDigits, 0) + ")");
                 return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0)), UNNECESSARY));
             }
 
@@ -309,19 +303,128 @@ public class VerticaClient
             case Types.TIMESTAMP:
                 return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MILLIS));
 
-            /*case Types.ARRAY:
-                Optional<ColumnMapping> columnMapping = arrayToTrinoType(session, connection, typeHandle);
+            case Types.ARRAY:
+                return Optional.empty();
+                /*Optional<ColumnMapping> columnMapping = arrayToTrinoType(session, connection, typeHandle);
                 if (columnMapping.isPresent()) {
                     return columnMapping;
                 }
                 break;*/
         }
 
+        log.debug("typeHandle(2):notSupported:" + typeHandle.toString());
         if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
             return mapToUnboundedVarchar(typeHandle);
         }
 
         return Optional.empty();
+    }
+
+    private Optional<ColumnMapping> arrayToTrinoType(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
+    {
+        checkArgument(typeHandle.getJdbcType() == Types.ARRAY, "Not array type");
+        log.debug("session = " + session.toString());
+        // resolve and map base array element type
+        JdbcTypeHandle baseElementTypeHandle = getArrayElementTypeHandle(connection, typeHandle);
+        String baseElementTypeName = baseElementTypeHandle.getJdbcTypeName()
+                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Element type name is missing: " + baseElementTypeHandle));
+        Optional<ColumnMapping> baseElementMapping = toColumnMapping(session, connection, baseElementTypeHandle);
+        // Vertica doesn't return the array dimensions this way... have to assume it's 1 here?
+        /*if (typeHandle.getArrayDimensions().isEmpty()) {
+            log.debug("empty array dimensions?");
+            return Optional.empty();
+        }*/
+        return baseElementMapping
+                .map(elementMapping -> {
+                    ArrayType trinoArrayType = new ArrayType(elementMapping.getType());
+                    ColumnMapping arrayColumnMapping = arrayColumnMapping(session, trinoArrayType, elementMapping, baseElementTypeName);
+
+                    int arrayDimensions = typeHandle.getArrayDimensions().get();
+                    for (int i = 1; i < arrayDimensions; i++) {
+                        trinoArrayType = new ArrayType(trinoArrayType);
+                        arrayColumnMapping = arrayColumnMapping(session, trinoArrayType, arrayColumnMapping, baseElementTypeName);
+                    }
+                    return arrayColumnMapping;
+                });
+    }
+
+    private static JdbcTypeHandle getArrayElementTypeHandle(Connection connection, JdbcTypeHandle arrayTypeHandle)
+    {
+        String jdbcTypeName = arrayTypeHandle.getJdbcTypeName()
+                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + arrayTypeHandle));
+        log.debug("### JDBC array type handle = " + arrayTypeHandle.toString());
+        return new JdbcTypeHandle(
+                Types.INTEGER,
+                Optional.of("Integer"),
+                arrayTypeHandle.getColumnSize(),
+                arrayTypeHandle.getDecimalDigits(),
+                Optional.of(1),
+                Optional.empty());
+        /*
+        try {
+            TypeInfo typeInfo = connection.unwrap(PgConnection.class).getTypeInfo();
+            int pgElementOid = typeInfo.getPGArrayElement(typeInfo.getPGType(jdbcTypeName));
+            verify(arrayTypeHandle.getCaseSensitivity().isEmpty(), "Case sensitivity not supported");
+            return new JdbcTypeHandle(
+                    typeInfo.getSQLType(pgElementOid),
+                    Optional.of(typeInfo.getPGType(pgElementOid)),
+                    arrayTypeHandle.getColumnSize(),
+                    arrayTypeHandle.getDecimalDigits(),
+                    arrayTypeHandle.getArrayDimensions(),
+                    Optional.empty());
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+        */
+    }
+
+    private static ColumnMapping arrayColumnMapping(ConnectorSession session, ArrayType arrayType, ColumnMapping arrayElementMapping, String baseElementJdbcTypeName)
+    {
+        return ColumnMapping.objectMapping(
+                arrayType,
+                arrayReadFunction(arrayType.getElementType(), arrayElementMapping.getReadFunction()),
+                arrayWriteFunction(session, arrayType.getElementType(), baseElementJdbcTypeName));
+    }
+
+    private static ObjectReadFunction arrayReadFunction(Type elementType, ReadFunction elementReadFunction)
+    {
+        return ObjectReadFunction.of(Block.class, (resultSet, columnIndex) -> {
+            Array array = resultSet.getArray(columnIndex);
+            BlockBuilder builder = elementType.createBlockBuilder(null, 10);
+            try (ResultSet arrayAsResultSet = array.getResultSet()) {
+                while (arrayAsResultSet.next()) {
+                    if (elementReadFunction.isNull(arrayAsResultSet, ARRAY_RESULT_SET_VALUE_COLUMN)) {
+                        builder.appendNull();
+                    }
+                    else if (elementType.getJavaType() == boolean.class) {
+                        elementType.writeBoolean(builder, ((BooleanReadFunction) elementReadFunction).readBoolean(arrayAsResultSet, ARRAY_RESULT_SET_VALUE_COLUMN));
+                    }
+                    else if (elementType.getJavaType() == long.class) {
+                        elementType.writeLong(builder, ((LongReadFunction) elementReadFunction).readLong(arrayAsResultSet, ARRAY_RESULT_SET_VALUE_COLUMN));
+                    }
+                    else if (elementType.getJavaType() == double.class) {
+                        elementType.writeDouble(builder, ((DoubleReadFunction) elementReadFunction).readDouble(arrayAsResultSet, ARRAY_RESULT_SET_VALUE_COLUMN));
+                    }
+                    else if (elementType.getJavaType() == Slice.class) {
+                        elementType.writeSlice(builder, ((SliceReadFunction) elementReadFunction).readSlice(arrayAsResultSet, ARRAY_RESULT_SET_VALUE_COLUMN));
+                    }
+                    else {
+                        elementType.writeObject(builder, ((ObjectReadFunction) elementReadFunction).readObject(arrayAsResultSet, ARRAY_RESULT_SET_VALUE_COLUMN));
+                    }
+                }
+            }
+
+            return builder.build();
+        });
+    }
+
+    private static ObjectWriteFunction arrayWriteFunction(ConnectorSession session, Type elementType, String baseElementJdbcTypeName)
+    {
+        return ObjectWriteFunction.of(Block.class, (statement, index, block) -> {
+            Array jdbcArray = null; //statement.getConnection().createArrayOf(baseElementJdbcTypeName, getJdbcObjectArray(session, elementType, block));
+            statement.setArray(index, jdbcArray);
+        });
     }
 
     @Override
