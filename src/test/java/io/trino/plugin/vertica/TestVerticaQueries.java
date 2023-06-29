@@ -61,6 +61,12 @@ public class TestVerticaQueries
     }
 
     @Test
+    public void selectTsFromTable()
+    {
+        assertQuerySucceeds("SELECT ts FROM vertica.trino.test WHERE ts > timestamp '2023-01-01 00:00:00'");
+    }
+
+    @Test
     public void aggregates()
     {
         assertQuerySucceeds("create table vertica.trino.unitAgg (a int, b double)");

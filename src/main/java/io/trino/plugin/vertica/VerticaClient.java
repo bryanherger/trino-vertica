@@ -107,6 +107,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
+import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping;
@@ -127,8 +128,9 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunct
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.timeWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timestampColumnMapping;
+import static io.trino.plugin.jdbc.StandardColumnMappings.timestampWriteFunctionUsingSqlTimestamp;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.toTrinoTimestamp;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varcharReadFunction;
@@ -148,7 +150,7 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TimeType.createTimeType;
 import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
-import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MICROS;
 import static io.trino.spi.type.Timestamps.MILLISECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_DAY;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MILLISECOND;
@@ -164,6 +166,7 @@ import static io.trino.spi.type.VarcharType.createVarcharType;
 import static java.lang.Math.floorDiv;
 import static java.lang.Math.floorMod;
 import static java.lang.Math.max;
+import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.math.RoundingMode.UNNECESSARY;
 import static java.util.stream.Collectors.joining;
@@ -301,7 +304,7 @@ public class VerticaClient
                 return Optional.of(timeColumnMapping(typeHandle.getRequiredDecimalDigits()));
 
             case Types.TIMESTAMP:
-                return Optional.of(timestampColumnMapping(TIMESTAMP_MILLIS));
+                return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MICROS));
 
             case Types.ARRAY:
                 return Optional.empty();
@@ -545,6 +548,24 @@ public class VerticaClient
                 varcharReadFunction(varcharType),
                 varcharWriteFunction(),
                 DISABLE_PUSHDOWN);
+    }
+
+    private static ColumnMapping timestampColumnMappingUsingSqlTimestampWithRounding(TimestampType timestampType)
+    {
+        // TODO support higher precision
+        checkArgument(timestampType.getPrecision() <= TimestampType.MAX_SHORT_PRECISION, "Precision is out of range: %s", timestampType.getPrecision());
+        return ColumnMapping.longMapping(
+                timestampType,
+                (resultSet, columnIndex) -> {
+                    LocalDateTime localDateTime = resultSet.getTimestamp(columnIndex).toLocalDateTime();
+                    int roundedNanos = toIntExact(round(localDateTime.getNano(), 9 - timestampType.getPrecision()));
+                    LocalDateTime rounded = localDateTime
+                            .withNano(0)
+                            .plusNanos(roundedNanos);
+                    return toTrinoTimestamp(timestampType, rounded);
+                },
+                timestampWriteFunctionUsingSqlTimestamp(timestampType),
+                FULL_PUSHDOWN);
     }
 
     private static ColumnMapping timeColumnMapping(int precision)
