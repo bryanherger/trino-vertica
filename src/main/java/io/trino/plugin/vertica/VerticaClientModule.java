@@ -23,6 +23,7 @@ import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.JdbcClient;
+import io.trino.plugin.jdbc.JdbcJoinPushdownSupportModule;
 import io.trino.plugin.jdbc.credential.CredentialProvider;
 
 import java.sql.DriverManager;
@@ -36,6 +37,7 @@ public class VerticaClientModule
     public void setup(Binder binder)
     {
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(VerticaClient.class).in(Scopes.SINGLETON);
+        install(new JdbcJoinPushdownSupportModule());
     }
 
     @Provides
