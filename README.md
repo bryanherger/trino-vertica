@@ -5,7 +5,7 @@ This is an experiment based on trino-example-jdbc.  Currently it supports:
 
 Data types: BOOLEAN, INT, DOUBLE, CHAR, VARCHAR, BINARY, VARBINARY, DATE, TIME, TIMESTAMP, UUID
 
-I've added some aggregate and expression support copied from the Postgres connector, but this is very much a work in progress with many missing features.  File an issue if you need me to prioritize something.
+I've added some aggregate and expression support copied from the Postgres connector as well as join pushdown (enabled by config, see below), but this is very much a work in progress with many missing features.  File an issue if you need me to prioritize something.
 
 ### How to install
 
@@ -32,6 +32,8 @@ connector.name=vertica
 connection-url=jdbc:vertica://localhost:5433/xxx
 connection-user=xxx
 connection-password=xxx
+# uncomment/set the following to EAGER to enable join pushdown
+#join-pushdown.strategy=EAGER
 ```
 Restart Trino.  You should be able to get something like this to work (outputs simplified here):
 ```
