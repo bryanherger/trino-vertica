@@ -664,14 +664,6 @@ public class VerticaClient
     @Override
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
-        for (JdbcSortItem sortItem : sortOrder) {
-            Type sortItemType = sortItem.getColumn().getColumnType();
-            if (sortItemType instanceof CharType || sortItemType instanceof VarcharType) {
-                if (!isCollatable(sortItem.getColumn())) {
-                    return false;
-                }
-            }
-        }
         return true;
     }
 
@@ -682,34 +674,13 @@ public class VerticaClient
             String orderBy = sortItems.stream()
                     .map(sortItem -> {
                         String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String nullsHandling = sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
+                        String nullsHandling = ""; //sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
                         String collation = "";
-                        if (isCollatable(sortItem.getColumn())) {
-                            // Vertica does not support COLLATE and always uses current locale.
-                            //collation = "COLLATE \"C\"";
-                        }
                         return format("%s %s %s %s", quoted(sortItem.getColumn().getColumnName()), collation, ordering, nullsHandling);
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s LIMIT %d", query, orderBy, limit);
         });
-    }
-
-    protected static boolean isCollatable(JdbcColumnHandle column)
-    {
-        if (column.getColumnType() instanceof CharType || column.getColumnType() instanceof VarcharType) {
-            String jdbcTypeName = column.getJdbcTypeHandle().getJdbcTypeName()
-                    .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + column.getJdbcTypeHandle()));
-            return isCollatable(jdbcTypeName);
-        }
-        // non-textual types don't have the concept of collation
-        return false;
-    }
-
-    private static boolean isCollatable(String jdbcTypeName)
-    {
-        // Only char (internally named bpchar)/varchar/text are the built-in collatable types
-        return "bpchar".equals(jdbcTypeName) || "varchar".equals(jdbcTypeName) || "text".equals(jdbcTypeName);
     }
 
     @Override
