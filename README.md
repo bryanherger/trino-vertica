@@ -9,11 +9,15 @@ I've added some aggregate and expression support copied from the Postgres connec
 
 ### How to install
 
-Out of the box, this connector works with Trino release version 419.
+The master branch of this connector works with Trino release version 422.  Tags and binary releases exist for v405 and v419.
 
-Download and unpack the Trino 419 tag from the official GitHub.
+INSTALL FROM BINARY RELEASE: Download the ZIP and unzip in your Trino plugins directory.  Rename the directory to "vertica".  Create a catalog  file as shown below.  Restart Trino.
 
-Download this repo and copy trino-vertica into the plugins directory
+INSTALL FROM GITHUB SOURCE:
+
+Download and unpack the Trino 422 tag from the official GitHub.
+
+Clone or download this repo and copy trino-vertica into the plugins directory
 
 Import the project into IntelliJ IDEA.  Open the root pom.xml and add "plugin/trino-vertica" as a module in the modules list.
 
@@ -21,9 +25,11 @@ Reload Maven and wait for everything to settle.
 
 Open the Maven panel and expand trino-vertica lifecycle.  Tests are implemented using TestContainers and can take a long time to run, so you might ant to skip tests.  Run Clean, then Install.
 
-Now go to the source tree into plugins/trino-vertica/target.  Copy the ZIP file to the plugins directory in your Trino 419 install.
+Now go to the source tree into plugins/trino-vertica/target.  Copy the ZIP file to the plugins directory in your Trino install.
 
 Expand the ZIP and rename the directory to "vertica".
+
+CREATE A CATALOG FILE:
 
 Add a minimal catalog file, e.g.:
 ```
