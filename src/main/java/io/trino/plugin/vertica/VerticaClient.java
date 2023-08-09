@@ -22,7 +22,6 @@ import io.airlift.slice.Slice;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
-import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.BooleanReadFunction;
@@ -33,7 +32,6 @@ import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcJoinCondition;
 import io.trino.plugin.jdbc.JdbcSortItem;
-import io.trino.plugin.jdbc.JdbcStatisticsConfig;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.LongReadFunction;
@@ -63,10 +61,10 @@ import io.trino.plugin.jdbc.aggregation.ImplementSum;
 import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
 import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
-import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
 import io.trino.plugin.jdbc.expression.RewriteIn;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
+import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
@@ -77,9 +75,6 @@ import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.expression.ConnectorExpression;
-import io.trino.spi.statistics.ColumnStatistics;
-import io.trino.spi.statistics.Estimate;
-import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
@@ -93,8 +88,6 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
-import org.jdbi.v3.core.Handle;
-import org.jdbi.v3.core.Jdbi;
 
 import java.sql.Array;
 import java.sql.Connection;
@@ -107,6 +100,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -115,9 +109,7 @@ import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.base.Verify.verify;
-import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.JdbcJoinPushdownUtil.implementJoinCostAware;
 import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
@@ -183,8 +175,6 @@ import static java.lang.Math.max;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.math.RoundingMode.UNNECESSARY;
-import static java.util.Objects.requireNonNull;
-import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.joining;
 
 public class VerticaClient
@@ -192,17 +182,19 @@ public class VerticaClient
 {
     private static final Logger log = Logger.get(VerticaClient.class);
     private static final int ARRAY_RESULT_SET_VALUE_COLUMN = 2;
+    private static final String DUPLICATE_TABLE_SQLSTATE = "42P07";
     private static final int POSTGRESQL_MAX_SUPPORTED_TIMESTAMP_PRECISION = 6;
+    private static final int PRECISION_OF_UNSPECIFIED_DECIMAL = 0;
     private final Type uuidType;
     private final List<String> tableTypes;
-    private final boolean statisticsEnabled;
-    private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
+    private final ConnectorExpressionRewriter<String> connectorExpressionRewriter;
     private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
+
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
 
     @Inject
     public VerticaClient(
             BaseJdbcConfig config,
-            JdbcStatisticsConfig statisticsConfig,
             ConnectionFactory connectionFactory,
             QueryBuilder queryBuilder,
             TypeManager typeManager,
@@ -213,8 +205,6 @@ public class VerticaClient
         ImmutableList.Builder<String> tableTypes = ImmutableList.builder();
         tableTypes.add("TABLE", "VIEW", "SYSTEM TABLE");
         this.tableTypes = tableTypes.build();
-        this.statisticsEnabled = statisticsConfig.isEnabled();
-        log.info("statisticsEnabled:" + this.statisticsEnabled);
         this.uuidType = typeManager.getType(new TypeSignature(StandardTypes.UUID));
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
@@ -240,7 +230,7 @@ public class VerticaClient
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter<>(
                 this.connectorExpressionRewriter,
-                ImmutableSet.<AggregateFunctionRule<JdbcExpression, ParameterizedExpression>>builder()
+                ImmutableSet.<AggregateFunctionRule<JdbcExpression, String>>builder()
                         .add(new ImplementCountAll(bigintTypeHandle))
                         .add(new ImplementMinMax(false))
                         .add(new ImplementCount(bigintTypeHandle))
@@ -264,7 +254,7 @@ public class VerticaClient
     {
         String jdbcTypeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
-        log.info("typeHandle(1):" + typeHandle.toString());
+        log.debug(typeHandle.toString());
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;
@@ -331,7 +321,6 @@ public class VerticaClient
                 break;*/
         }
 
-        log.debug("typeHandle(2):notSupported:" + typeHandle.toString());
         if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
             return mapToUnboundedVarchar(typeHandle);
         }
@@ -665,7 +654,7 @@ public class VerticaClient
     }
 
     @Override
-    public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    public Optional<String> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
     {
         return connectorExpressionRewriter.rewrite(session, expression, assignments);
     }
@@ -678,6 +667,14 @@ public class VerticaClient
     @Override
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
+        for (JdbcSortItem sortItem : sortOrder) {
+            Type sortItemType = sortItem.getColumn().getColumnType();
+            if (sortItemType instanceof CharType || sortItemType instanceof VarcharType) {
+                if (!isCollatable(sortItem.getColumn())) {
+                    return false;
+                }
+            }
+        }
         return true;
     }
 
@@ -688,13 +685,34 @@ public class VerticaClient
             String orderBy = sortItems.stream()
                     .map(sortItem -> {
                         String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String nullsHandling = ""; //sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
+                        String nullsHandling = sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
                         String collation = "";
+                        if (isCollatable(sortItem.getColumn())) {
+                            // Vertica does not support COLLATE and always uses current locale.
+                            //collation = "COLLATE \"C\"";
+                        }
                         return format("%s %s %s %s", quoted(sortItem.getColumn().getColumnName()), collation, ordering, nullsHandling);
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s LIMIT %d", query, orderBy, limit);
         });
+    }
+
+    protected static boolean isCollatable(JdbcColumnHandle column)
+    {
+        if (column.getColumnType() instanceof CharType || column.getColumnType() instanceof VarcharType) {
+            String jdbcTypeName = column.getJdbcTypeHandle().getJdbcTypeName()
+                    .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + column.getJdbcTypeHandle()));
+            return isCollatable(jdbcTypeName);
+        }
+        // non-textual types don't have the concept of collation
+        return false;
+    }
+
+    private static boolean isCollatable(String jdbcTypeName)
+    {
+        // Only char (internally named bpchar)/varchar/text are the built-in collatable types
+        return "bpchar".equals(jdbcTypeName) || "varchar".equals(jdbcTypeName) || "text".equals(jdbcTypeName);
     }
 
     @Override
@@ -713,100 +731,6 @@ public class VerticaClient
     public boolean isLimitGuaranteed(ConnectorSession session)
     {
         return true;
-    }
-
-    @Override
-    public TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle)
-    {
-        if (!statisticsEnabled) {
-            return TableStatistics.empty();
-        }
-        if (!handle.isNamedRelation()) {
-            return TableStatistics.empty();
-        }
-        try {
-            return readTableStatistics(session, handle);
-        }
-        catch (SQLException | RuntimeException e) {
-            throwIfInstanceOf(e, TrinoException.class);
-            throw new TrinoException(JDBC_ERROR, "Failed fetching statistics for table: " + handle, e);
-        }
-    }
-
-    private TableStatistics readTableStatistics(ConnectorSession session, JdbcTableHandle table)
-            throws SQLException
-    {
-        checkArgument(table.isNamedRelation(), "Relation is not a table: %s", table);
-
-        try (Connection connection = connectionFactory.openConnection(session);
-                Handle handle = Jdbi.open(connection)) {
-            StatisticsDao statisticsDao = new StatisticsDao(handle);
-
-            Optional<Long> optionalRowCount = readRowCountTableStat(statisticsDao, table);
-            if (optionalRowCount.isEmpty()) {
-                // Table not found
-                return TableStatistics.empty();
-            }
-            long rowCount = optionalRowCount.get();
-            if (rowCount == -1) {
-                // Table has never yet been vacuumed or analyzed
-                return TableStatistics.empty();
-            }
-            TableStatistics.Builder tableStatistics = TableStatistics.builder();
-            tableStatistics.setRowCount(Estimate.of(rowCount));
-
-            if (rowCount == 0) {
-                return tableStatistics.build();
-            }
-
-            RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            Map<String, ColumnStatisticsResult> columnStatistics = statisticsDao.getColumnStatistics(remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName()).stream()
-                    .collect(toImmutableMap(ColumnStatisticsResult::getColumnName, identity()));
-
-            for (JdbcColumnHandle column : this.getColumns(session, table)) {
-                ColumnStatisticsResult result = columnStatistics.get(column.getColumnName());
-                if (result == null) {
-                    continue;
-                }
-
-                ColumnStatistics statistics = ColumnStatistics.builder()
-                        .setNullsFraction(result.getNullsFraction()
-                                .map(Estimate::of)
-                                .orElseGet(Estimate::unknown))
-                        .setDistinctValuesCount(result.getDistinctValuesIndicator()
-                                .map(distinctValuesIndicator -> {
-                                    if (distinctValuesIndicator >= 0.0) {
-                                        return distinctValuesIndicator;
-                                    }
-                                    return -distinctValuesIndicator * rowCount;
-                                })
-                                .map(Estimate::of)
-                                .orElseGet(Estimate::unknown))
-                        .setDataSize(result.getAverageColumnLength()
-                                .flatMap(averageColumnLength ->
-                                        result.getNullsFraction().map(nullsFraction ->
-                                                Estimate.of(1.0 * averageColumnLength * rowCount * (1 - nullsFraction))))
-                                .orElseGet(Estimate::unknown))
-                        .build();
-
-                tableStatistics.setColumnStatistics(column, statistics);
-            }
-
-            return tableStatistics.build();
-        }
-    }
-
-    private static Optional<Long> readRowCountTableStat(StatisticsDao statisticsDao, JdbcTableHandle table)
-    {
-        RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-        String schemaName = remoteTableName.getSchemaName().orElse(null);
-        Optional<Long> rowCount = statisticsDao.getRowCount(schemaName, remoteTableName.getTableName());
-        log.info("rowCount for " + schemaName + "." + remoteTableName.getTableName() + ":" + rowCount.toString());
-        if (rowCount.isEmpty()) {
-            // Table not found
-            return Optional.empty();
-        }
-        return rowCount;
     }
 
     @Override
@@ -883,90 +807,5 @@ public class VerticaClient
                 "COMMENT ON TABLE %s IS %s",
                 quoted(remoteTableName),
                 comment.map(BaseJdbcClient::varcharLiteral).orElse("NULL"));
-    }
-
-    private static class StatisticsDao
-    {
-        private final Handle handle;
-
-        public StatisticsDao(Handle handle)
-        {
-            this.handle = requireNonNull(handle, "handle is null");
-        }
-
-        Optional<Long> getRowCount(String schema, String tableName)
-        {
-            return handle.createQuery("select ls.\"row_count\"\n" +
-                            "        from \"v_internal\".\"vs_logical_statistics\" as ls\n" +
-                            "        left join \"v_internal\".\"vs_tables\" as t\n" +
-                            "        on ls.\"table_oid\" = t.\"oid\"\n" +
-                            "        left join \"v_internal\".\"vs_schemata\" as s\n" +
-                            "        on t.\"schema\" = s.\"oid\"\n" +
-                            "        where s.\"name\" = :schema and t.\"name\" = :table_name and ls.\"is_row_count_valid\"")
-                    .bind("schema", schema)
-                    .bind("table_name", tableName)
-                    .mapTo(Long.class)
-                    .findOne();
-        }
-
-        List<ColumnStatisticsResult> getColumnStatistics(String schema, String tableName)
-        {
-            /*
-            select pc.name,pc.min,pc.max,pc.ndv,pc.typelen from vs_projections p join vs_projection_columns pc on p.oid = pc.proj where p.schemaname = :schema and p.anchortablename = :table_name and pc.stat_type = 'FULL'
-             */
-            return handle.createQuery("select pc.name,pc.min,pc.max,pc.ndv,pc.typelen from vs_projections p join vs_projection_columns pc on p.oid = pc.proj where p.schemaname = :schema and p.anchortablename = :table_name and pc.stat_type = 'FULL'")
-                    .bind("schema", schema)
-                    .bind("table_name", tableName)
-                    .map((rs, ctx) -> new ColumnStatisticsResult(
-                            requireNonNull(rs.getString("name"), "name is null"),
-                            //Optional.ofNullable(rs.getObject("null_frac", Float.class)),
-                            Optional.ofNullable(rs.getObject("ndv", Float.class)),
-                            Optional.ofNullable(rs.getObject("typelen", Integer.class))))
-                    .list();
-        }
-    }
-
-    private static class ColumnStatisticsResult
-    {
-        private final String columnName;
-        private final Optional<Float> nullsFraction;
-        private final Optional<Float> distinctValuesIndicator;
-        private final Optional<Integer> averageColumnLength;
-
-        public ColumnStatisticsResult(String columnName, Optional<Float> nullsFraction, Optional<Float> distinctValuesIndicator, Optional<Integer> averageColumnLength)
-        {
-            this.columnName = columnName;
-            this.nullsFraction = nullsFraction;
-            this.distinctValuesIndicator = distinctValuesIndicator;
-            this.averageColumnLength = averageColumnLength;
-        }
-
-        public ColumnStatisticsResult(String columnName, Optional<Float> distinctValuesIndicator, Optional<Integer> averageColumnLength)
-        {
-            this.columnName = columnName;
-            this.nullsFraction = Optional.empty();
-            this.distinctValuesIndicator = distinctValuesIndicator;
-            this.averageColumnLength = averageColumnLength;
-        }
-
-        public String getColumnName()
-        {
-            return columnName;
-        }
-
-        public Optional<Float> getNullsFraction()
-        {
-            return nullsFraction;
-        }
-
-        public Optional<Float> getDistinctValuesIndicator()
-        {
-            return distinctValuesIndicator;
-        }
-
-        public Optional<Integer> getAverageColumnLength()
-        {
-            return averageColumnLength;
-        }
     }
 }
