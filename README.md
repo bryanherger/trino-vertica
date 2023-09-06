@@ -9,13 +9,13 @@ I've added some aggregate and expression support copied from the Postgres connec
 
 ### How to install
 
-The master branch of this connector works with Trino release version 423.  Tags and binary releases exist for several older branches.
+The master branch of this connector works with Trino release version 425.  Tags and binary releases exist for several older branches.
 
 INSTALL FROM BINARY RELEASE: Download the ZIP and unzip in your Trino plugins directory.  Rename the directory to "vertica".  Create a catalog  file as shown below.  Restart Trino.
 
 INSTALL FROM GITHUB SOURCE:
 
-Download and unpack the Trino 423 tag from the official GitHub.
+Download and unpack the Trino 425 tag from the official GitHub.
 
 Clone or download this repo and copy trino-vertica into the plugins directory
 
