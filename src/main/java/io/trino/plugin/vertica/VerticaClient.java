@@ -62,6 +62,7 @@ import io.trino.plugin.jdbc.aggregation.ImplementStddevSamp;
 import io.trino.plugin.jdbc.aggregation.ImplementSum;
 import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
 import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
+import io.trino.plugin.jdbc.expression.ComparisonOperator;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
@@ -220,9 +221,11 @@ public class VerticaClient
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
                 // TODO allow all comparison operators for numeric types
-                .add(new RewriteComparison(ImmutableSet.of(RewriteComparison.ComparisonOperator.EQUAL, RewriteComparison.ComparisonOperator.NOT_EQUAL)))
+                // TODO add timestamp comparison with string
+                .add(new RewriteComparison(ImmutableSet.of(ComparisonOperator.EQUAL, ComparisonOperator.NOT_EQUAL)))
                 .add(new RewriteIn())
                 .withTypeClass("integer_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint"))
+                .withTypeClass("numeric_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint", "decimal", "double"))
                 .map("$add(left: integer_type, right: integer_type)").to("left + right")
                 .map("$subtract(left: integer_type, right: integer_type)").to("left - right")
                 .map("$multiply(left: integer_type, right: integer_type)").to("left * right")
@@ -235,6 +238,10 @@ public class VerticaClient
                 .map("$not(value: boolean)").to("NOT value")
                 .map("$is_null(value)").to("value IS NULL")
                 .map("$nullif(first, second)").to("NULLIF(first, second)")
+                .map("$less_than(left: numeric_type, right: numeric_type)").to("left < right")
+                .map("$equal(left: date, right: varchar)").to("left = right")
+                .map("$less_than(left: date, right: varchar)").to("left < right")
+                .map("$more_than(left: date, right: varchar)").to("left > right")
                 .build();
 
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
@@ -262,7 +269,7 @@ public class VerticaClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String jdbcTypeName = typeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
         log.info("typeHandle(1):" + typeHandle.toString());
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
@@ -274,7 +281,7 @@ public class VerticaClient
             case "Uuid":
                 return Optional.of(uuidColumnMapping());
         }
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BIT:
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
@@ -295,20 +302,22 @@ public class VerticaClient
             case Types.DECIMAL:
             {
                 // example: typeHandle(1):JdbcTypeHandle{jdbcType=2, jdbcTypeName=Numeric, columnSize=18, decimalDigits=8}
-                int columnSize = typeHandle.getRequiredColumnSize();
+                int columnSize = typeHandle.requiredColumnSize();
                 int precision;
-                int decimalDigits = typeHandle.getDecimalDigits().orElse(0);
+                int decimalDigits = typeHandle.decimalDigits().orElse(0);
                 precision = columnSize + max(-decimalDigits, 0); // Map decimal(p, -s) (negative scale) to decimal(p+s, 0).
                 log.info("decimal type (" + precision + "," + max(decimalDigits, 0) + ")");
                 return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0)), UNNECESSARY));
             }
 
             case Types.CHAR:
-                return Optional.of(charColumnMapping(typeHandle.getRequiredColumnSize()));
+                return Optional.of(charColumnMapping(typeHandle.requiredColumnSize()));
 
+            case Types.LONGVARCHAR:
             case Types.VARCHAR:
-                return Optional.of(varcharColumnMapping(typeHandle.getRequiredColumnSize()));
+                return Optional.of(varcharColumnMapping(typeHandle.requiredColumnSize()));
 
+            case Types.LONGVARBINARY:
             case Types.BINARY:
             case Types.VARBINARY:
                 return Optional.of(varbinaryColumnMapping());
@@ -317,7 +326,7 @@ public class VerticaClient
                 return Optional.of(dateColumnMappingUsingSqlDate());
 
             case Types.TIME:
-                return Optional.of(timeColumnMapping(typeHandle.getRequiredDecimalDigits()));
+                return Optional.of(timeColumnMapping(typeHandle.requiredDecimalDigits()));
 
             case Types.TIMESTAMP:
                 return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MICROS));
@@ -341,11 +350,11 @@ public class VerticaClient
 
     private Optional<ColumnMapping> arrayToTrinoType(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        checkArgument(typeHandle.getJdbcType() == Types.ARRAY, "Not array type");
+        checkArgument(typeHandle.jdbcType() == Types.ARRAY, "Not array type");
         log.debug("session = " + session.toString());
         // resolve and map base array element type
         JdbcTypeHandle baseElementTypeHandle = getArrayElementTypeHandle(connection, typeHandle);
-        String baseElementTypeName = baseElementTypeHandle.getJdbcTypeName()
+        String baseElementTypeName = baseElementTypeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Element type name is missing: " + baseElementTypeHandle));
         Optional<ColumnMapping> baseElementMapping = toColumnMapping(session, connection, baseElementTypeHandle);
         // Vertica doesn't return the array dimensions this way... have to assume it's 1 here?
@@ -358,7 +367,7 @@ public class VerticaClient
                     ArrayType trinoArrayType = new ArrayType(elementMapping.getType());
                     ColumnMapping arrayColumnMapping = arrayColumnMapping(session, trinoArrayType, elementMapping, baseElementTypeName);
 
-                    int arrayDimensions = typeHandle.getArrayDimensions().get();
+                    int arrayDimensions = typeHandle.arrayDimensions().get();
                     for (int i = 1; i < arrayDimensions; i++) {
                         trinoArrayType = new ArrayType(trinoArrayType);
                         arrayColumnMapping = arrayColumnMapping(session, trinoArrayType, arrayColumnMapping, baseElementTypeName);
@@ -369,14 +378,14 @@ public class VerticaClient
 
     private static JdbcTypeHandle getArrayElementTypeHandle(Connection connection, JdbcTypeHandle arrayTypeHandle)
     {
-        String jdbcTypeName = arrayTypeHandle.getJdbcTypeName()
+        String jdbcTypeName = arrayTypeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + arrayTypeHandle));
         log.debug("### JDBC array type handle = " + arrayTypeHandle.toString());
         return new JdbcTypeHandle(
                 Types.INTEGER,
                 Optional.of("Integer"),
-                arrayTypeHandle.getColumnSize(),
-                arrayTypeHandle.getDecimalDigits(),
+                arrayTypeHandle.columnSize(),
+                arrayTypeHandle.decimalDigits(),
                 Optional.of(1),
                 Optional.empty());
         /*
@@ -387,9 +396,9 @@ public class VerticaClient
             return new JdbcTypeHandle(
                     typeInfo.getSQLType(pgElementOid),
                     Optional.of(typeInfo.getPGType(pgElementOid)),
-                    arrayTypeHandle.getColumnSize(),
-                    arrayTypeHandle.getDecimalDigits(),
-                    arrayTypeHandle.getArrayDimensions(),
+                    arrayTypeHandle.ColumnSize(),
+                    arrayTypeHandle.DecimalDigits(),
+                    arrayTypeHandle.ArrayDimensions(),
                     Optional.empty());
         }
         catch (SQLException e) {
@@ -687,10 +696,10 @@ public class VerticaClient
         return Optional.of((query, sortItems, limit) -> {
             String orderBy = sortItems.stream()
                     .map(sortItem -> {
-                        String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String nullsHandling = ""; //sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
+                        String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                        String nullsHandling = "";
                         String collation = "";
-                        return format("%s %s %s %s", quoted(sortItem.getColumn().getColumnName()), collation, ordering, nullsHandling);
+                        return format("%s %s %s %s", quoted(sortItem.column().getColumnName()), collation, ordering, nullsHandling);
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s LIMIT %d", query, orderBy, limit);
@@ -814,10 +823,10 @@ public class VerticaClient
             ConnectorSession session,
             JoinType joinType,
             PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
             PreparedQuery rightSource,
-            List<JdbcJoinCondition> joinConditions,
-            Map<JdbcColumnHandle, String> rightAssignments,
-            Map<JdbcColumnHandle, String> leftAssignments,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions,
             JoinStatistics statistics)
     {
         if (joinType == JoinType.FULL_OUTER) {
@@ -830,7 +839,7 @@ public class VerticaClient
                 leftSource,
                 rightSource,
                 statistics,
-                () -> super.implementJoin(session, joinType, leftSource, rightSource, joinConditions, rightAssignments, leftAssignments, statistics));
+                () -> super.implementJoin(session, joinType, leftSource, leftProjections, rightSource, rightProjections, joinConditions, statistics));
     }
 
     @Override
@@ -849,7 +858,7 @@ public class VerticaClient
                 case GREATER_THAN_OR_EQUAL:
                 case EQUAL:
                 case NOT_EQUAL:
-                case IS_DISTINCT_FROM:
+                case IDENTICAL:
                     return true;
             }
             return false;

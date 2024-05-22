@@ -1,5 +1,8 @@
-# trino-vertica
+# trino-vertica-connector
 Trino JDBC connector to Vertica
+
+This project is based on trino-vertica by bryanherger. You can find the original project here: https://github.com/bryanherger/trino-vertica.
+
 
 This is an experiment based on trino-example-jdbc.  Currently it supports:
 

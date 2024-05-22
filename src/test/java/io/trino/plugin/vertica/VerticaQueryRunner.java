@@ -45,7 +45,7 @@ public class VerticaQueryRunner
                 .buildOrThrow();
         QueryRunner queryRunner = DistributedQueryRunner.builder(defaultSession)
                 .setExtraProperties(extraProperties)
-                .setNodeCount(1)
+//                 .setNodeCount(1)
                 .build();
         queryRunner.installPlugin(new VerticaPlugin());
 
