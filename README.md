@@ -2,23 +2,20 @@
 Trino JDBC connector to Vertica
 
 This project is based on trino-vertica by bryanherger. You can find the original project here: https://github.com/bryanherger/trino-vertica.
+The original was targeting Trino 425, but builds just fine for Trino 431 with just a version change in pom.xml,
+but is broken for Trino 448.
 
-
-This is an experiment based on trino-example-jdbc.  Currently it supports:
-
-Data types: BOOLEAN, INT, DOUBLE, CHAR, VARCHAR, BINARY, VARBINARY, DATE, TIME, TIMESTAMP, UUID
-
-I've added some aggregate and expression support copied from the Postgres connector as well as join pushdown (enabled by config, see below), but this is very much a work in progress with many missing features.  File an issue if you need me to prioritize something.
+This version updates the connector for Trino 448 and beyond
 
 ### How to install
 
-The master branch of this connector works with Trino release version 425.  Tags and binary releases exist for several older branches.
+The master branch of this connector works with Trino release version 448.  Tags and binary releases exist for several older branches.
 
 INSTALL FROM BINARY RELEASE: Download the ZIP and unzip in your Trino plugins directory.  Rename the directory to "vertica".  Create a catalog  file as shown below.  Restart Trino.
 
 INSTALL FROM GITHUB SOURCE:
 
-Download and unpack the Trino 425 tag from the official GitHub.
+Download and unpack the Trino 448 tag from the official GitHub.
 
 Clone or download this repo and copy trino-vertica into the plugins directory
 
@@ -27,6 +24,8 @@ Import the project into IntelliJ IDEA.  Open the root pom.xml and add "plugin/tr
 Reload Maven and wait for everything to settle.
 
 Open the Maven panel and expand trino-vertica lifecycle.  Tests are implemented using TestContainers and can take a long time to run, so you might ant to skip tests.  Run Clean, then Install.
+
+./mvnw clean install -DskipTests
 
 Now go to the source tree into plugins/trino-vertica/target.  Copy the ZIP file to the plugins directory in your Trino install.
 
